@@ -1,1 +1,341 @@
+#include <FastLED.h>
+#include <Wire.h>
+#include <NewPing.h>
+#include <Vector.h>
+#define LED_PIN 8
+#define NUM_LEDS 60  //60
+#define trigPin 3
+#define echoPin 2
+#define OUT_RED 5
+#define OUT_GREEN 6
+#define MIC A0
+#define LIGHT A1
+#define MAX_DISTANCE 80
+#define SENSITIVITY 2
 
+const int sampleWindow = 15; // Sample window width in mS (50 mS = 20Hz)
+unsigned int sample;
+int hue, acthue, actvalue, value,
+    soundstate, light, actlight, maxvalue, minvalue, bright, diffsum, distanceCm;
+float soundDifference;
+CRGB leds[NUM_LEDS];
+char state, color, bmode;
+unsigned long aAllow, aTimer, modeallow, modetimer, loopcount, bAllow, bTimer;
+int top = 0;
+int singleLed = 0;
+long duration;
+int storage_array[10];
+Vector<int> micdata(storage_array);
+
+int diff(int a, int b) {    //retirns the difference between two numbers
+  if (a > b) {
+    return a - b;
+  }
+  else {
+    return b - a;
+  }
+}
+
+int measureDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  duration = pulseIn(echoPin, HIGH);
+  int vissza;
+  vissza = (duration * 0.0340 / 2);
+  if (vissza < MAX_DISTANCE) {
+    return vissza;
+  }
+  else return 0;
+}
+
+void do_A() {   //distance measure mode
+  if ((distanceCm < 20 && distanceCm > 18) && color == 'V') {
+    value = 0;
+    FastLED.clear();
+    return;
+  }
+
+  if (distanceCm < 60 && distanceCm > 20) {   //between 20 and 60 cm
+    if (color == 'H') {   //changing hue (color) based on the measured distance
+      hue = map(distanceCm, 20, 60, 0, 255);
+    }
+    else if (color == 'V') {    //changing value (brightness) based on the measured distance
+      value = map(distanceCm, 20, 60, 0, 255);
+      if (value > 242) {
+        value = 255;
+      }
+    }
+    if (value > actvalue) {   //these are here so the value hueValueChanges smoothly
+      actvalue++;
+    }
+    if (value < actvalue) {
+      actvalue--;
+    }
+    if (hue > acthue) {
+      acthue++;
+    }
+    if (hue < acthue) {
+      acthue--;
+    }
+
+    for (int i = 0; i < NUM_LEDS; i++) {    //giving value to the leds
+      leds[i] = CHSV(acthue, 255, actvalue);
+    }
+  }
+}
+
+void do_B() {   //michrophone mode
+  unsigned long startMillis = millis();
+  unsigned int peakToPeak = 0;
+  unsigned int signalMax = 0;
+  unsigned int signalMin = 1024;
+
+  // collect data for 50 mS
+  while (millis() - startMillis < sampleWindow)
+  {
+    sample = analogRead(A0);
+    if (sample < 1024)  // toss out spurious readings
+    {
+      if (sample > signalMax)
+      {
+        signalMax = sample;  // save just the max levels
+      }
+      else if (sample < signalMin)
+      {
+        signalMin = sample;  // save just the min levels
+      }
+    }
+  }
+  soundDifference = signalMax - signalMin;  // max - min = peak-peak amplitude
+  soundDifference = soundDifference * SENSITIVITY;
+
+  if (top < soundDifference) {
+    top = soundDifference;
+  }
+
+  if (singleLed < top) {
+    singleLed = soundDifference;
+  }
+  if (top > soundDifference) {
+    top--;
+  }
+  if (singleLed > soundDifference && loopcount % 2 == 0) {
+    singleLed--;
+  }
+  if (top > NUM_LEDS) {
+    top = NUM_LEDS;
+    singleLed = NUM_LEDS;
+  }
+  if (top < 2) {
+    top = 0;
+  }
+  if (singleLed < 4) {
+    singleLed = 0;
+  }
+
+  for (int i = 0; i < NUM_LEDS; i++) {
+    if (bmode == 'H') {   //in this mode it bounces up and down
+      if (i < top) {
+        leds[i] = CHSV(i * (255 / NUM_LEDS), 255, map(i, 0, NUM_LEDS, 0, 255) + 1); //
+      }
+      else {
+        leds[i] = CRGB(0, 0, 0);
+      }
+      if (singleLed != 0) {
+        leds[singleLed] = CHSV(map(singleLed, 0, NUM_LEDS, 0, 255), 255, 255);
+      }
+    }
+    if (bmode == 'V') {   //in this mode all the leds are on, only the brightness changes
+      leds[i] = CHSV(map(i, 0, NUM_LEDS, 0, 255), 255, map(top, 0, NUM_LEDS, 0, 255)); //(i*5)+1 //itt mindegyik világit, a fényerőt allítja
+    }
+  }
+}
+
+void do_C() {   //light sensor mode
+  if (light > maxvalue) {
+    maxvalue = light;
+  }
+  if (light < minvalue) {
+    minvalue = light;
+  }
+  if (actlight < light) {
+    actlight++;
+  }
+  if (actlight > light) {
+    actlight--;
+  }
+
+  bright = map(light, minvalue, maxvalue, 0, 255);
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = CHSV(48, 255, 255 - bright);    //without the "255 - " we can reverse it
+  }
+}
+
+void hueValueChange(char& valami) {
+  if (valami == 'H') {
+    valami = 'V';
+  }
+  else if (valami == 'V') {
+    valami = 'H';
+  }
+}
+
+void Changemodes() {
+  if (state == 'A') {
+    state = 'B';
+  }
+  else if (state == 'B') {
+    state = 'C';
+  }
+  else if (state == 'C') {
+    state = 'A';
+    pinMode(trigPin, OUTPUT);
+    pinMode(echoPin, INPUT);
+    for (int i = 0; i < NUM_LEDS; i++) {
+      leds[i] = CHSV(hue, 255, value);
+    }
+  }
+  FastLED.show();
+}
+
+NewPing sonar(trigPin, echoPin, 40);
+void setup() {
+  //mode declaration
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(MIC, INPUT);
+  pinMode(LIGHT, INPUT);
+  pinMode(OUT_RED, OUTPUT);
+  pinMode(OUT_GREEN, OUTPUT);
+  //starting mode
+  state = 'A';
+  color = 'H';
+  bmode = 'H';
+
+  light = analogRead(LIGHT);
+  actlight = light;
+
+  //lightsensor
+  maxvalue = 170;
+  minvalue = 35;
+
+  //LED check
+  leds[0] = CRGB(0, 255, 0);
+  FastLED.show();
+  delay(100);
+  leds[0] = CRGB(0, 0, 0);
+  FastLED.show();
+
+  //LED starting values
+  hue = 255;
+  acthue = 255;
+  value = 255;
+  actvalue = 255;
+  modeallow = 0;
+  aAllow = 0;
+  modetimer = 0;
+  aTimer = 0;
+  bAllow = 0;
+  bTimer = 0;
+  //debug
+  Serial.begin(115200);
+}
+bool zold = false;
+void loop() {
+  loopcount++;
+  if (state == 'B') {
+    if (loopcount % 10 == 1) {    //here only checks every 10th loop, so when reacting to music, it doesnt have to wait so much
+      distanceCm = measureDistance();
+    }
+  }
+  else {
+    distanceCm = measureDistance();
+  }
+
+  if (distanceCm < 10 && distanceCm > 1) {
+    if (modeallow < millis()) {
+      digitalWrite(OUT_GREEN, HIGH);
+      digitalWrite(OUT_RED, LOW);
+      zold = true;
+    }
+    else {
+      digitalWrite(OUT_RED, HIGH);
+    }
+  }
+  else {
+    modetimer = millis() + 1500;
+  }
+  if (modetimer < millis() && modeallow < millis()) {
+    Changemodes();
+    modeallow = millis() + 4000;
+    modetimer = millis() + 5500;
+  }
+  digitalWrite(OUT_RED, LOW);
+  if (distanceCm > 10 || distanceCm == 0) {
+    digitalWrite(OUT_GREEN, LOW);
+    zold = false;
+  }
+
+  if (state == 'A') {
+    if (distanceCm < 80 && distanceCm > 65) {
+      if (aAllow < millis()) {
+        digitalWrite(OUT_GREEN, HIGH);
+        digitalWrite(OUT_RED, LOW);
+      }
+      else {
+        digitalWrite(OUT_RED, HIGH);
+      }
+    }
+    else {
+      aTimer = millis() + 1500;
+    }
+    if (aTimer < millis() && aAllow < millis()) {
+      hueValueChange(color);
+      aAllow = millis() + 4000;
+      aTimer = millis() + 5500;
+    }
+    digitalWrite(OUT_RED, LOW);
+    if ((distanceCm > 80 || distanceCm < 65) && zold == false) {
+      digitalWrite(OUT_GREEN, LOW);
+    }
+    do_A();
+  }
+
+  if (state == 'B') {
+    if (distanceCm < 80 && distanceCm > 20) {
+
+      if (bAllow < millis()) {
+        digitalWrite(OUT_GREEN, HIGH);
+        digitalWrite(OUT_RED, LOW);
+      }
+      else {
+        digitalWrite(OUT_RED, HIGH);
+      }
+    }
+
+    else {
+      bTimer = millis() + 1500;
+    }
+    if (bTimer < millis() && bAllow < millis()) {
+      hueValueChange(bmode);
+      bAllow = millis() + 4000;   //after changing modes, it disables for 4 seconds.
+      bTimer = millis() + 5500;
+
+    }
+    digitalWrite(OUT_RED, LOW);
+    if ((distanceCm > 35 || distanceCm < 30) && zold == false) {
+      digitalWrite(OUT_GREEN, LOW);
+    }
+    do_B();
+  }
+
+  if (state == 'C') {
+    light = analogRead(LIGHT);
+    do_C();
+  }
+  FastLED.show();
+}
